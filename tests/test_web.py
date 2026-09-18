@@ -1,9 +1,11 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from extractors import ExtractorLoadError
-from keys import MemoryKeyStore, create_key
+from keys import FileKeyStore, MemoryKeyStore, create_key
 from schemas import ExtractEntitiesRequest
-from web import create_web_app
+from web import KEY_STORE_UNAVAILABLE, create_web_app
 
 ADMIN = "admin-test-token"
 
@@ -195,6 +197,40 @@ def test_keys_require_admin_token() -> None:
         headers={"Authorization": f"Bearer {api_key.key}"},
     )
     assert response.status_code == 401
+
+
+def test_corrupt_key_store_returns_503(tmp_path: Path) -> None:
+    path = tmp_path / "keys.json"
+    path.write_text("{not valid json")
+    client = TestClient(
+        create_web_app(
+            key_store=FileKeyStore(path),
+            admin_token=ADMIN,
+            extract=fake_extract,
+        )
+    )
+    headers = {"Authorization": f"Bearer {ADMIN}"}
+
+    health = client.get("/health")
+    assert health.status_code == 503
+    assert health.json() == {"detail": KEY_STORE_UNAVAILABLE}
+
+    created = client.post("/v1/keys", headers=headers, json={"name": "x"})
+    assert created.status_code == 503
+    assert created.json() == {"detail": KEY_STORE_UNAVAILABLE}
+
+    listed = client.get("/v1/keys", headers=headers)
+    assert listed.status_code == 503
+
+    deleted = client.delete("/v1/keys/k_missing", headers=headers)
+    assert deleted.status_code == 503
+
+    extract = client.post(
+        "/v1/extract_entities",
+        headers={"Authorization": "Bearer jv_not-a-real-key"},
+        json={"text": "Apple", "labels": ["company"]},
+    )
+    assert extract.status_code == 503
 
 
 def test_delete_missing_key_is_404() -> None:
