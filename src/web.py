@@ -32,7 +32,13 @@ def create_web_app(
     admin_token: str,
     extract: Callable[[ExtractEntitiesRequest], object],
 ) -> FastAPI:
-    app = FastAPI(title="GLiNER2.5", version="0.1.0")
+    app = FastAPI(
+        title="GLiNER2.5",
+        version="0.1.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
 
     def require_bearer(
         creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),

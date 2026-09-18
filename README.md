@@ -50,7 +50,7 @@ export URL="https://<your-app>.modal.run"
 export ADMIN_TOKEN="..."   # the value you created above
 ```
 
-`GET $URL/health` is unauthenticated. It means the web process is up, not that an extractor is warm.
+`GET $URL/health` is unauthenticated. It means the web process is up, not that an extractor is warm. `/docs`, `/redoc`, and `/openapi.json` are disabled so the public URL does not advertise admin routes.
 
 ## 4. Mint an API key
 

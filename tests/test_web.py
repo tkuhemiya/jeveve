@@ -29,6 +29,13 @@ def test_health_is_public() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_docs_and_openapi_are_disabled() -> None:
+    client, _ = make_client()
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        response = client.get(path)
+        assert response.status_code == 404, path
+
+
 def test_extract_requires_bearer() -> None:
     client, _ = make_client()
     response = client.post(
