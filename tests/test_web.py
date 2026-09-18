@@ -1,0 +1,169 @@
+from fastapi.testclient import TestClient
+
+from keys import MemoryKeyStore, create_key
+from schemas import ExtractEntitiesRequest
+from web import create_web_app
+
+ADMIN = "admin-test-token"
+
+
+def fake_extract(body: ExtractEntitiesRequest) -> dict:
+    return {
+        "model": body.model,
+        "entities": {"person": ["Tim Cook"], "company": ["Apple"]},
+    }
+
+
+def make_client(store: MemoryKeyStore | None = None) -> tuple[TestClient, MemoryKeyStore]:
+    store = store or MemoryKeyStore()
+    app = create_web_app(key_store=store, admin_token=ADMIN, extract=fake_extract)
+    return TestClient(app), store
+
+
+def test_health_is_public() -> None:
+    client, _ = make_client()
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_extract_requires_bearer() -> None:
+    client, _ = make_client()
+    response = client.post(
+        "/v1/extract_entities",
+        json={"text": "Apple CEO Tim Cook", "labels": ["person"]},
+    )
+    assert response.status_code == 401
+
+
+def test_extract_rejects_unknown_key() -> None:
+    client, _ = make_client()
+    response = client.post(
+        "/v1/extract_entities",
+        headers={"Authorization": "Bearer jv_not-a-real-key"},
+        json={"text": "Apple CEO Tim Cook", "labels": ["person"]},
+    )
+    assert response.status_code == 401
+
+
+def test_extract_rejects_unknown_fields() -> None:
+    client, store = make_client()
+    created = create_key(store, name="bot")
+    response = client.post(
+        "/v1/extract_entities",
+        headers={"Authorization": f"Bearer {created.key}"},
+        json={
+            "text": "Apple CEO Tim Cook",
+            "labels": ["person"],
+            "unexpected": True,
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_extract_defaults_to_small_and_returns_library_object() -> None:
+    client, store = make_client()
+    created = create_key(store, name="bot")
+    response = client.post(
+        "/v1/extract_entities",
+        headers={"Authorization": f"Bearer {created.key}"},
+        json={
+            "text": "Apple CEO Tim Cook announced iPhone 15 in Cupertino yesterday.",
+            "labels": ["company", "person", "product", "location"],
+            "include_confidence": True,
+            "include_spans": True,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "model": "small",
+        "entities": {"person": ["Tim Cook"], "company": ["Apple"]},
+    }
+
+
+def test_extract_accepts_described_labels_and_model() -> None:
+    client, store = make_client()
+    created = create_key(store, name=None)
+    response = client.post(
+        "/v1/extract_entities",
+        headers={"Authorization": f"Bearer {created.key}"},
+        json={
+            "model": "multi",
+            "text": "Tim Cook",
+            "labels": {"person": "A named human"},
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["model"] == "multi"
+
+
+def test_empty_labels_are_rejected() -> None:
+    client, store = make_client()
+    created = create_key(store, name="bot")
+    response = client.post(
+        "/v1/extract_entities",
+        headers={"Authorization": f"Bearer {created.key}"},
+        json={"text": "hello", "labels": []},
+    )
+    assert response.status_code == 422
+
+
+def test_admin_can_create_list_and_delete_keys() -> None:
+    client, _ = make_client()
+    created = client.post(
+        "/v1/keys",
+        headers={"Authorization": f"Bearer {ADMIN}"},
+        json={"name": "prod-bot"},
+    )
+    assert created.status_code == 201
+    body = created.json()
+    assert body["name"] == "prod-bot"
+    assert body["id"].startswith("k_")
+    assert body["key"].startswith("jv_")
+
+    listed = client.get("/v1/keys", headers={"Authorization": f"Bearer {ADMIN}"})
+    assert listed.status_code == 200
+    rows = listed.json()
+    assert len(rows) == 1
+    assert rows[0]["id"] == body["id"]
+    assert "hash" not in rows[0]
+    assert "key" not in rows[0]
+
+    extract = client.post(
+        "/v1/extract_entities",
+        headers={"Authorization": f"Bearer {body['key']}"},
+        json={"text": "Apple", "labels": ["company"]},
+    )
+    assert extract.status_code == 200
+
+    deleted = client.delete(
+        f"/v1/keys/{body['id']}",
+        headers={"Authorization": f"Bearer {ADMIN}"},
+    )
+    assert deleted.status_code == 204
+
+    extract_again = client.post(
+        "/v1/extract_entities",
+        headers={"Authorization": f"Bearer {body['key']}"},
+        json={"text": "Apple", "labels": ["company"]},
+    )
+    assert extract_again.status_code == 401
+
+
+def test_keys_require_admin_token() -> None:
+    client, store = make_client()
+    api_key = create_key(store, name="bot")
+    response = client.get(
+        "/v1/keys",
+        headers={"Authorization": f"Bearer {api_key.key}"},
+    )
+    assert response.status_code == 401
+
+
+def test_delete_missing_key_is_404() -> None:
+    client, _ = make_client()
+    response = client.delete(
+        "/v1/keys/k_missing",
+        headers={"Authorization": f"Bearer {ADMIN}"},
+    )
+    assert response.status_code == 404
