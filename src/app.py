@@ -15,16 +15,23 @@ keys_vol = modal.Volume.from_name("gliner-keys", create_if_missing=True)
 admin = modal.Secret.from_name("gliner-admin")
 
 KEYS_PATH = Path("/keys/keys.json")
+SRC_DIR = Path(__file__).resolve().parent
 
-web_image = modal.Image.debian_slim(python_version="3.12").pip_install(
-    "fastapi[standard]==0.141.1",
-    "pydantic==2.13.5",
+web_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install(
+        "fastapi[standard]==0.141.1",
+        "pydantic==2.13.5",
+    )
+    .add_local_dir(str(SRC_DIR), remote_path="/pkg")
+    .env({"PYTHONPATH": "/pkg"})
 )
 
 infer_image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install("gliner2[local]==2.0.0", "pydantic==2.13.5")
-    .env({"HF_HOME": "/root/.cache/huggingface"})
+    .add_local_dir(str(SRC_DIR), remote_path="/pkg")
+    .env({"HF_HOME": "/root/.cache/huggingface", "PYTHONPATH": "/pkg"})
     .run_commands(
         "python -c \""
         "from gliner2 import AutoExtractor as A;"
