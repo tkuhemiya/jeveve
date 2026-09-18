@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from keys import (
     FileKeyStore,
+    KeyStoreCorrupt,
     MemoryKeyStore,
     create_key,
     delete_key,
@@ -48,8 +49,19 @@ def test_delete_unknown_key_is_missing(tmp_path: Path) -> None:
 def test_file_store_rejects_invalid_persisted_rows(tmp_path: Path) -> None:
     path = tmp_path / "keys.json"
     path.write_text('[{"id": "nope", "name": null, "hash": "abc", "created_at": "now"}]\n')
-    with pytest.raises(ValidationError):
+    with pytest.raises(KeyStoreCorrupt) as excinfo:
         FileKeyStore(path).load()
+    assert excinfo.value.path == path
+    assert isinstance(excinfo.value.__cause__, ValidationError)
+
+
+def test_file_store_rejects_corrupt_json(tmp_path: Path) -> None:
+    path = tmp_path / "keys.json"
+    path.write_text("{not valid json")
+    with pytest.raises(KeyStoreCorrupt) as excinfo:
+        FileKeyStore(path).load()
+    assert excinfo.value.path == path
+    assert isinstance(excinfo.value.__cause__, ValidationError)
 
 
 def test_stored_key_cannot_hold_a_raw_secret() -> None:
