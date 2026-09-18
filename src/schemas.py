@@ -94,3 +94,4 @@ class CreatedKey(KeyRow):
 
 class Health(TypedDict):
     status: Literal["ok"]
+    models: NotRequired[dict[ModelName, Literal["ready", "unloaded"]]]

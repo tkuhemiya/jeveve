@@ -6,6 +6,7 @@ from collections.abc import Callable
 from fastapi import Body, Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from extractors import ExtractorLoadError, ModelReadiness
 from keys import KeyStore, create_key, delete_key, find_by_bearer, list_keys, secrets_equal
 from schemas import (
     CreatedKey,
@@ -13,6 +14,7 @@ from schemas import (
     ExtractEntitiesRequest,
     Health,
     KeyRow,
+    ModelName,
 )
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -31,6 +33,7 @@ def create_web_app(
     key_store: KeyStore,
     admin_token: str,
     extract: Callable[[ExtractEntitiesRequest], object],
+    model_status: Callable[[], dict[ModelName, ModelReadiness]] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="GLiNER2.5", version="0.1.0")
 
@@ -53,14 +56,24 @@ def create_web_app(
 
     @app.get("/health")
     def health() -> Health:
-        return {"status": "ok"}
+        payload: Health = {"status": "ok"}
+        if model_status is not None:
+            payload["models"] = model_status()
+        return payload
 
     @app.post("/v1/extract_entities", response_model=None)
     def extract_entities(
         body: ExtractEntitiesRequest,
         _: str = Depends(require_api_key),
     ) -> object:
-        return extract(body)
+        try:
+            return extract(body)
+        except ExtractorLoadError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Model {exc.model!r} is not ready; retry shortly.",
+                headers={"Retry-After": str(exc.retry_after)},
+            ) from exc
 
     @app.post("/v1/keys", status_code=status.HTTP_201_CREATED)
     def post_key(
