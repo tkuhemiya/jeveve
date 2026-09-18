@@ -52,6 +52,42 @@ def test_empty_and_blank_labels_are_rejected() -> None:
         ExtractEntitiesRequest(text="Apple", labels=[""])
     with pytest.raises(ValidationError):
         ExtractEntitiesRequest(text="Apple", labels={"": "a company"})
+    with pytest.raises(ValidationError):
+        ExtractEntitiesRequest(text="Apple", labels=["\u200b"])
+    with pytest.raises(ValidationError):
+        ExtractEntitiesRequest(text="Apple", labels={"\ufeff": "a company"})
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "   ",
+        "\t",
+        "\n",
+        "\u00a0",  # NBSP
+        "\u200b",  # ZWSP
+        "\ufeff",  # BOM
+        "\u200c",  # ZWNJ
+        "\u200d",  # ZWJ
+        "\u200e",  # LRM
+        "\u200f",  # RLM
+        "\u2060",  # word joiner
+        "\u200b\ufeff \t\u00a0",
+    ],
+)
+def test_invisible_or_blank_text_is_rejected(text: str) -> None:
+    with pytest.raises(ValidationError):
+        ExtractEntitiesRequest(text=text, labels=["company"])
+
+
+def test_text_strips_invisible_affixes_and_keeps_visible_content() -> None:
+    body = ExtractEntitiesRequest(text="\u200b Apple \ufeff", labels=["company"])
+    assert body.text == "Apple"
+
+
+def test_text_is_nfc_normalized() -> None:
+    body = ExtractEntitiesRequest(text="Cafe\u0301", labels=["company"])
+    assert body.text == "Caf\u00e9"
 
 
 def test_extract_call_omits_unset_options() -> None:

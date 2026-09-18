@@ -99,6 +99,18 @@ def test_extract_accepts_described_labels_and_model() -> None:
     assert response.json()["model"] == "multi"
 
 
+def test_invisible_text_is_rejected() -> None:
+    client, store = make_client()
+    created = create_key(store, name="bot")
+    for text in ("\u200b", "\ufeff", "   "):
+        response = client.post(
+            "/v1/extract_entities",
+            headers={"Authorization": f"Bearer {created.key}"},
+            json={"text": text, "labels": ["company"]},
+        )
+        assert response.status_code == 422
+
+
 def test_empty_labels_are_rejected() -> None:
     client, store = make_client()
     created = create_key(store, name="bot")

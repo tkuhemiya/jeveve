@@ -1,13 +1,41 @@
+import unicodedata
 from typing import Annotated, Literal, NotRequired, TypedDict, TypeGuard
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+
+# Cf covers ZWSP, BOM/ZWNBSP, ZWNJ/ZWJ, and bidi marks. Cc/Cs catch other controls.
+_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
+
+
+def _is_invisible(char: str) -> bool:
+    return char.isspace() or unicodedata.category(char) in _INVISIBLE_CATEGORIES
+
+
+def strip_invisible_unicode(value: object) -> object:
+    """NFC-normalize and strip Unicode whitespace plus format/control chars."""
+    if not isinstance(value, str):
+        return value
+    normalized = unicodedata.normalize("NFC", value)
+    start = 0
+    end = len(normalized)
+    while start < end and _is_invisible(normalized[start]):
+        start += 1
+    while end > start and _is_invisible(normalized[end - 1]):
+        end -= 1
+    return normalized[start:end]
+
 
 type ModelName = Literal["small", "base", "multi"]
 type OverlapPolicy = Literal["allow", "nested", "flat", "disallow", "longest"]
-type LabelName = Annotated[str, Field(min_length=1)]
+type LabelName = Annotated[str, BeforeValidator(strip_invisible_unicode), Field(min_length=1)]
 type Labels = list[LabelName] | dict[LabelName, str]
 type ExtractResult = object
 type DeleteOutcome = Literal["deleted", "missing"]
+type TextInput = Annotated[
+    str,
+    BeforeValidator(strip_invisible_unicode),
+    Field(min_length=1, max_length=50_000),
+]
 
 MODELS: dict[ModelName, str] = {
     "small": "fastino/gliner2.5-small-v1",
@@ -32,7 +60,7 @@ class ExtractEntitiesRequest(BaseModel):
     model_config = _STRICT
 
     model: ModelName = "small"
-    text: str = Field(min_length=1, max_length=50_000)
+    text: TextInput
     labels: Labels = Field(min_length=1)
     include_confidence: bool = False
     include_spans: bool = False
