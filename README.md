@@ -50,7 +50,7 @@ export URL="https://<your-app>.modal.run"
 export ADMIN_TOKEN="..."   # the value you created above
 ```
 
-`GET $URL/health` is unauthenticated. It means the web process is up, not that an extractor is warm.
+`GET $URL/health` is unauthenticated. It means the web process is up and `keys.json` is readable, not that an extractor is warm. Corrupt or unreadable key store is 503.
 
 ## 4. Mint an API key
 
@@ -96,6 +96,18 @@ Use `"model": "multi"` for non-English text. Labels can also be a map of name â†
 ```
 
 Cold extract boots the web function if needed, then the extractor pool for that `model`. `small` traffic does not keep `multi` warm. Idle containers scale to zero after 60s.
+
+## Key store recovery
+
+`keys.json` lives on Modal volume `gliner-keys` (mounted at `/keys`). Writes are atomic (temp file + replace). If the file is corrupt, `/health`, key admin routes, and extract auth return 503. There is no API rewrite path â€” restore the volume file.
+
+Copy the current file off the volume before you replace it:
+
+```bash
+uv run modal volume get gliner-keys keys.json ./keys.json.corrupt
+# restore a known-good backup, or write a valid list (`[]` means no API keys)
+uv run modal volume put --force gliner-keys ./keys.json keys.json
+```
 
 ## Local checks
 

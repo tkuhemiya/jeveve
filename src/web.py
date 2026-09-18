@@ -3,10 +3,19 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 
-from fastapi import Body, Depends, FastAPI, HTTPException, status
+from fastapi import Body, Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from keys import KeyStore, create_key, delete_key, find_by_bearer, list_keys, secrets_equal
+from keys import (
+    KeyStore,
+    KeyStoreCorrupt,
+    create_key,
+    delete_key,
+    find_by_bearer,
+    list_keys,
+    secrets_equal,
+)
 from schemas import (
     CreatedKey,
     CreateKeyRequest,
@@ -16,6 +25,11 @@ from schemas import (
 )
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+KEY_STORE_UNAVAILABLE = (
+    "Key store is corrupt or unreadable. Copy /keys/keys.json off the gliner-keys "
+    "volume before replacing it; restore a backup or a valid JSON list of keys."
+)
 
 
 def _unauthorized() -> HTTPException:
@@ -33,6 +47,13 @@ def create_web_app(
     extract: Callable[[ExtractEntitiesRequest], object],
 ) -> FastAPI:
     app = FastAPI(title="GLiNER2.5", version="0.1.0")
+
+    @app.exception_handler(KeyStoreCorrupt)
+    def key_store_corrupt(_request: Request, _exc: KeyStoreCorrupt) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": KEY_STORE_UNAVAILABLE},
+        )
 
     def require_bearer(
         creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
@@ -53,6 +74,7 @@ def create_web_app(
 
     @app.get("/health")
     def health() -> Health:
+        key_store.load()
         return {"status": "ok"}
 
     @app.post("/v1/extract_entities", response_model=None)

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import NewType, Protocol
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from schemas import CreatedKey, DeleteOutcome, KeyRow, StoredKey
 
@@ -39,6 +39,14 @@ def mint_key_id() -> str:
 
 def utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
+
+
+class KeyStoreCorrupt(Exception):
+    """Raised when the on-disk key store cannot be read or parsed."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        super().__init__(f"corrupt key store at {path}")
 
 
 class KeyStore(Protocol):
@@ -85,7 +93,10 @@ class FileKeyStore:
             self._reload()
         if not self.path.exists():
             return []
-        return STORED_KEYS.validate_json(self.path.read_bytes())
+        try:
+            return STORED_KEYS.validate_json(self.path.read_bytes())
+        except (OSError, ValidationError) as exc:
+            raise KeyStoreCorrupt(self.path) from exc
 
     def _save(self, keys: list[StoredKey]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
