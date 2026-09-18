@@ -11,7 +11,6 @@ from schemas import (
     CreatedKey,
     CreateKeyRequest,
     ExtractEntitiesRequest,
-    ExtractResult,
     Health,
     KeyRow,
 )
@@ -31,7 +30,7 @@ def create_web_app(
     *,
     key_store: KeyStore,
     admin_token: str,
-    extract: Callable[[ExtractEntitiesRequest], ExtractResult],
+    extract: Callable[[ExtractEntitiesRequest], object],
 ) -> FastAPI:
     app = FastAPI(title="GLiNER2.5", version="0.1.0")
 
@@ -56,11 +55,11 @@ def create_web_app(
     def health() -> Health:
         return {"status": "ok"}
 
-    @app.post("/v1/extract_entities")
+    @app.post("/v1/extract_entities", response_model=None)
     def extract_entities(
         body: ExtractEntitiesRequest,
         _: str = Depends(require_api_key),
-    ) -> ExtractResult:
+    ) -> object:
         return extract(body)
 
     @app.post("/v1/keys", status_code=status.HTTP_201_CREATED)

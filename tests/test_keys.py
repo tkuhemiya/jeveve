@@ -1,9 +1,18 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from keys import FileKeyStore, create_key, delete_key, find_by_bearer, hash_secret, list_keys
+from keys import (
+    FileKeyStore,
+    MemoryKeyStore,
+    create_key,
+    delete_key,
+    find_by_bearer,
+    hash_secret,
+    list_keys,
+)
 from schemas import StoredKey
 
 
@@ -51,3 +60,17 @@ def test_stored_key_cannot_hold_a_raw_secret() -> None:
             hash="jv_this-is-not-a-sha256",
             created_at="2026-01-01T00:00:00+00:00",
         )
+
+
+def test_concurrent_creates_keep_every_key() -> None:
+    store = MemoryKeyStore()
+    workers = 32
+
+    def mint(index: int):
+        return create_key(store, name=f"bot-{index}")
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        created = list(pool.map(mint, range(workers)))
+    rows = list_keys(store)
+    assert len(rows) == workers
+    assert {row.id for row in rows} == {item.id for item in created}

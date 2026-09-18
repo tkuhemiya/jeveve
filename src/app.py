@@ -30,9 +30,10 @@ web_image = (
 infer_image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install("gliner2[local]==2.0.0", "pydantic==2.13.5")
+    .env({"HF_HOME": "/root/.cache/huggingface"})
+    .run_commands(f'python -c "from gliner2 import AutoExtractor as A; {_PRELOAD}"')
     .add_local_dir(str(SRC_DIR), remote_path="/pkg")
     .env({"HF_HOME": "/root/.cache/huggingface", "PYTHONPATH": "/pkg"})
-    .run_commands(f'python -c "from gliner2 import AutoExtractor as A; {_PRELOAD}"')
 )
 
 
@@ -74,6 +75,7 @@ def _dispatch(body: ExtractEntitiesRequest) -> ExtractResult:
     cpu=1,
     memory=1024,
     min_containers=0,
+    max_containers=1,
     scaledown_window=60,
     secrets=[admin],
     volumes={"/keys": keys_vol},

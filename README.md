@@ -65,7 +65,7 @@ curl -sS -X POST "$URL/v1/keys" \
 {"id": "k_...", "name": "prod-bot", "created_at": "...", "key": "jv_..."}
 ```
 
-`key` is returned once. Put it in `API_KEY`. One key can call every model.
+`key` is returned once. Put it in `API_KEY`. One key can call every model. Create and delete run on a single web container so concurrent mints cannot overwrite `keys.json`. Extract still fans out to per-model pools.
 
 ```bash
 curl -sS "$URL/v1/keys" -H "Authorization: Bearer $ADMIN_TOKEN"

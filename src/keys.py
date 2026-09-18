@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -45,6 +46,10 @@ class KeyStore(Protocol):
 
     def save(self, keys: list[StoredKey]) -> None: ...
 
+    def transact[T](
+        self, mutate: Callable[[list[StoredKey]], tuple[list[StoredKey], T]]
+    ) -> T: ...
+
 
 class FileKeyStore:
     def __init__(
@@ -57,15 +62,32 @@ class FileKeyStore:
         self.path = path
         self._reload = reload
         self._commit = commit
+        self._lock = threading.Lock()
 
     def load(self) -> list[StoredKey]:
+        with self._lock:
+            return self._load()
+
+    def save(self, keys: list[StoredKey]) -> None:
+        with self._lock:
+            self._save(keys)
+
+    def transact[T](
+        self, mutate: Callable[[list[StoredKey]], tuple[list[StoredKey], T]]
+    ) -> T:
+        with self._lock:
+            keys, result = mutate(self._load())
+            self._save(keys)
+            return result
+
+    def _load(self) -> list[StoredKey]:
         if self._reload is not None:
             self._reload()
         if not self.path.exists():
             return []
         return STORED_KEYS.validate_json(self.path.read_bytes())
 
-    def save(self, keys: list[StoredKey]) -> None:
+    def _save(self, keys: list[StoredKey]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".json.tmp")
         tmp.write_bytes(STORED_KEYS.dump_json(keys, indent=2) + b"\n")
@@ -77,12 +99,23 @@ class FileKeyStore:
 class MemoryKeyStore:
     def __init__(self, keys: list[StoredKey] | None = None) -> None:
         self._keys = list(keys or [])
+        self._lock = threading.Lock()
 
     def load(self) -> list[StoredKey]:
-        return list(self._keys)
+        with self._lock:
+            return list(self._keys)
 
     def save(self, keys: list[StoredKey]) -> None:
-        self._keys = list(keys)
+        with self._lock:
+            self._keys = list(keys)
+
+    def transact[T](
+        self, mutate: Callable[[list[StoredKey]], tuple[list[StoredKey], T]]
+    ) -> T:
+        with self._lock:
+            keys, result = mutate(list(self._keys))
+            self._keys = list(keys)
+            return result
 
 
 def find_by_bearer(keys: list[StoredKey], bearer: str) -> StoredKey | None:
@@ -101,15 +134,17 @@ def create_key(store: KeyStore, *, name: str | None) -> CreatedKey:
         hash=hash_secret(raw),
         created_at=utc_now(),
     )
-    keys = store.load()
-    keys.append(record)
-    store.save(keys)
-    return CreatedKey(
+    created = CreatedKey(
         id=record.id,
         name=record.name,
         created_at=record.created_at,
         key=raw,
     )
+
+    def mutate(keys: list[StoredKey]) -> tuple[list[StoredKey], CreatedKey]:
+        return [*keys, record], created
+
+    return store.transact(mutate)
 
 
 def list_keys(store: KeyStore) -> list[KeyRow]:
@@ -117,9 +152,10 @@ def list_keys(store: KeyStore) -> list[KeyRow]:
 
 
 def delete_key(store: KeyStore, key_id: str) -> DeleteOutcome:
-    keys = store.load()
-    kept = [key for key in keys if key.id != key_id]
-    if len(kept) == len(keys):
-        return "missing"
-    store.save(kept)
-    return "deleted"
+    def mutate(keys: list[StoredKey]) -> tuple[list[StoredKey], DeleteOutcome]:
+        kept = [key for key in keys if key.id != key_id]
+        if len(kept) == len(keys):
+            return keys, "missing"
+        return kept, "deleted"
+
+    return store.transact(mutate)

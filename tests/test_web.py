@@ -7,7 +7,9 @@ from web import create_web_app
 ADMIN = "admin-test-token"
 
 
-def fake_extract(body: ExtractEntitiesRequest) -> dict:
+def fake_extract(body: ExtractEntitiesRequest) -> object:
+    if not body.format_results:
+        return [("Apple", 0.98, 0, 5)]
     return {
         "model": body.model,
         "entities": {"person": ["Tim Cook"], "company": ["Apple"]},
@@ -167,3 +169,19 @@ def test_delete_missing_key_is_404() -> None:
         headers={"Authorization": f"Bearer {ADMIN}"},
     )
     assert response.status_code == 404
+
+
+def test_raw_format_results_are_returned_as_json() -> None:
+    client, store = make_client()
+    created = create_key(store, name="bot")
+    response = client.post(
+        "/v1/extract_entities",
+        headers={"Authorization": f"Bearer {created.key}"},
+        json={
+            "text": "Apple",
+            "labels": ["company"],
+            "format_results": False,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == [["Apple", 0.98, 0, 5]]

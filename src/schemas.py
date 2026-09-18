@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from typing import Annotated, Literal, NotRequired, TypedDict, TypeGuard
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -7,7 +6,7 @@ type ModelName = Literal["small", "base", "multi"]
 type OverlapPolicy = Literal["allow", "nested", "flat", "disallow", "longest"]
 type LabelName = Annotated[str, Field(min_length=1)]
 type Labels = list[LabelName] | dict[LabelName, str]
-type ExtractResult = Mapping[str, object]
+type ExtractResult = object
 type DeleteOutcome = Literal["deleted", "missing"]
 
 MODELS: dict[ModelName, str] = {
