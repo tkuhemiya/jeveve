@@ -2,6 +2,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from extractors import ExtractorLoadError
 from keys import FileKeyStore, MemoryKeyStore, create_key
 from schemas import ExtractEntitiesRequest
 from web import KEY_STORE_UNAVAILABLE, create_web_app
@@ -29,6 +30,40 @@ def test_health_is_public() -> None:
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_health_includes_model_readiness_when_provided() -> None:
+    store = MemoryKeyStore()
+    app = create_web_app(
+        key_store=store,
+        admin_token=ADMIN,
+        extract=fake_extract,
+        model_status=lambda: {"small": "ready", "base": "unloaded", "multi": "unloaded"},
+    )
+    response = TestClient(app).get("/health")
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "models": {"small": "ready", "base": "unloaded", "multi": "unloaded"},
+    }
+
+
+def test_extract_load_failure_is_503_with_retry() -> None:
+    def broken_extract(body: ExtractEntitiesRequest) -> object:
+        raise ExtractorLoadError(body.model, retry_after=7)
+
+    store = MemoryKeyStore()
+    created = create_key(store, name="bot")
+    app = create_web_app(key_store=store, admin_token=ADMIN, extract=broken_extract)
+    response = TestClient(app).post(
+        "/v1/extract_entities",
+        headers={"Authorization": f"Bearer {created.key}"},
+        json={"text": "Apple", "labels": ["company"]},
+    )
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "7"
+    assert "not ready" in response.json()["detail"]
+    assert "small" in response.json()["detail"]
 
 
 def test_extract_requires_bearer() -> None:

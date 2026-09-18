@@ -4,8 +4,9 @@ from pathlib import Path
 
 import modal
 
+from extractors import ExtractorLoadError, is_extractor_startup_failure, load_extractor
 from keys import FileKeyStore
-from schemas import MODELS, ExtractEntitiesRequest, ExtractResult, extract_call, hub_id_for
+from schemas import MODELS, ExtractEntitiesRequest, ExtractResult, extract_call
 from web import admin_token_from_env, create_web_app
 
 app = modal.App("gliner")
@@ -52,13 +53,16 @@ class Extractor:
 
     @modal.enter()
     def load(self) -> None:
-        from gliner2 import AutoExtractor  # ty: ignore[unresolved-import]
-
-        self.extractor = AutoExtractor.from_pretrained(hub_id_for(self.name))
+        # Sole warm-load path. load_extractor serializes from_pretrained so a
+        # cold burst cannot race two checkpoints in one process.
+        self.extractor = load_extractor(self.name)
 
     @modal.method()
     def extract(self, body: ExtractEntitiesRequest) -> ExtractResult:
-        return self.extractor.extract_entities(
+        extractor = getattr(self, "extractor", None)
+        if extractor is None:
+            raise ExtractorLoadError(self.name)
+        return extractor.extract_entities(
             body.text,
             body.labels,
             **extract_call(body),
@@ -67,7 +71,14 @@ class Extractor:
 
 def _dispatch(body: ExtractEntitiesRequest) -> ExtractResult:
     extractor = Extractor(name=body.model)  # ty: ignore[unknown-argument]
-    return extractor.extract.remote(body)
+    try:
+        return extractor.extract.remote(body)
+    except ExtractorLoadError:
+        raise
+    except Exception as exc:
+        if is_extractor_startup_failure(exc):
+            raise ExtractorLoadError(body.model) from exc
+        raise
 
 
 @app.function(
