@@ -87,7 +87,7 @@ curl -sS -X POST "$URL/v1/extract_entities" \
   }'
 ```
 
-Unknown JSON fields return 422. Missing or wrong bearer returns 401.
+Unknown JSON fields return 422. Missing or wrong bearer returns 401. `text` longer than 8192 characters returns 422.
 
 Use `"model": "multi"` for non-English text. Labels can also be a map of name → description:
 

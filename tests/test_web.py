@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 from keys import MemoryKeyStore, create_key
-from schemas import ExtractEntitiesRequest
+from schemas import TEXT_MAX_LENGTH, ExtractEntitiesRequest, ExtractorOutOfMemory
 from web import create_web_app
 
 ADMIN = "admin-test-token"
@@ -97,6 +97,62 @@ def test_extract_accepts_described_labels_and_model() -> None:
     )
     assert response.status_code == 200
     assert response.json()["model"] == "multi"
+
+
+def test_text_above_max_length_is_422() -> None:
+    client, store = make_client()
+    created = create_key(store, name="bot")
+    response = client.post(
+        "/v1/extract_entities",
+        headers={"Authorization": f"Bearer {created.key}"},
+        json={"text": "x" * (TEXT_MAX_LENGTH + 1), "labels": ["company"]},
+    )
+    assert response.status_code == 422
+
+
+def test_text_at_max_length_reaches_extractor() -> None:
+    client, store = make_client()
+    created = create_key(store, name="bot")
+    response = client.post(
+        "/v1/extract_entities",
+        headers={"Authorization": f"Bearer {created.key}"},
+        json={"text": "x" * TEXT_MAX_LENGTH, "labels": ["company"]},
+    )
+    assert response.status_code == 200
+
+
+def test_extract_memory_error_is_503() -> None:
+    def boom(_body: ExtractEntitiesRequest) -> object:
+        raise MemoryError
+
+    store = MemoryKeyStore()
+    created = create_key(store, name="bot")
+    app = create_web_app(key_store=store, admin_token=ADMIN, extract=boom)
+    client = TestClient(app)
+    response = client.post(
+        "/v1/extract_entities",
+        headers={"Authorization": f"Bearer {created.key}"},
+        json={"text": "Apple", "labels": ["company"]},
+    )
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Extractor ran out of memory"}
+
+
+def test_extractor_oom_error_is_503() -> None:
+    def boom(_body: ExtractEntitiesRequest) -> object:
+        raise ExtractorOutOfMemory("extractor ran out of memory")
+
+    store = MemoryKeyStore()
+    created = create_key(store, name="bot")
+    app = create_web_app(key_store=store, admin_token=ADMIN, extract=boom)
+    client = TestClient(app)
+    response = client.post(
+        "/v1/extract_entities",
+        headers={"Authorization": f"Bearer {created.key}"},
+        json={"text": "Apple", "labels": ["company"]},
+    )
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Extractor ran out of memory"}
 
 
 def test_empty_labels_are_rejected() -> None:

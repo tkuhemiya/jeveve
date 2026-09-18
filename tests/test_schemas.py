@@ -3,6 +3,7 @@ from pydantic import ValidationError
 
 from schemas import (
     MODELS,
+    TEXT_MAX_LENGTH,
     ExtractCall,
     ExtractEntitiesRequest,
     extract_call,
@@ -52,6 +53,18 @@ def test_empty_and_blank_labels_are_rejected() -> None:
         ExtractEntitiesRequest(text="Apple", labels=[""])
     with pytest.raises(ValidationError):
         ExtractEntitiesRequest(text="Apple", labels={"": "a company"})
+
+
+def test_text_at_max_length_is_accepted() -> None:
+    body = ExtractEntitiesRequest(text="x" * TEXT_MAX_LENGTH, labels=["company"])
+    assert len(body.text) == TEXT_MAX_LENGTH
+
+
+def test_text_above_max_length_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ExtractEntitiesRequest(text="x" * (TEXT_MAX_LENGTH + 1), labels=["company"])
+    with pytest.raises(ValidationError):
+        ExtractEntitiesRequest(text="x" * 36_000, labels=["company"])
 
 
 def test_extract_call_omits_unset_options() -> None:

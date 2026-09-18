@@ -5,7 +5,14 @@ from pathlib import Path
 import modal
 
 from keys import FileKeyStore
-from schemas import MODELS, ExtractEntitiesRequest, ExtractResult, extract_call, hub_id_for
+from schemas import (
+    MODELS,
+    ExtractEntitiesRequest,
+    ExtractorOutOfMemory,
+    ExtractResult,
+    extract_call,
+    hub_id_for,
+)
 from web import admin_token_from_env, create_web_app
 
 app = modal.App("gliner")
@@ -58,16 +65,40 @@ class Extractor:
 
     @modal.method()
     def extract(self, body: ExtractEntitiesRequest) -> ExtractResult:
-        return self.extractor.extract_entities(
-            body.text,
-            body.labels,
-            **extract_call(body),
+        try:
+            return self.extractor.extract_entities(
+                body.text,
+                body.labels,
+                **extract_call(body),
+            )
+        except MemoryError as exc:
+            raise ExtractorOutOfMemory("extractor ran out of memory") from exc
+
+
+def _is_extractor_oom(exc: BaseException) -> bool:
+    if isinstance(exc, MemoryError | ExtractorOutOfMemory):
+        return True
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "out of memory",
+            "ran out of memory",
+            "memoryerror",
+            "oomkill",
+            "oom-kill",
         )
+    )
 
 
 def _dispatch(body: ExtractEntitiesRequest) -> ExtractResult:
     extractor = Extractor(name=body.model)  # ty: ignore[unknown-argument]
-    return extractor.extract.remote(body)
+    try:
+        return extractor.extract.remote(body)
+    except Exception as exc:
+        if _is_extractor_oom(exc):
+            raise ExtractorOutOfMemory("extractor ran out of memory") from exc
+        raise
 
 
 @app.function(

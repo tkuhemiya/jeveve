@@ -105,7 +105,7 @@ type Labels = list[str] | dict[str, str]
 class ExtractEntitiesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model: ModelName = "small"
-    text: str = Field(min_length=1, max_length=50_000)
+    text: str = Field(min_length=1, max_length=8_192)
     labels: Labels
     include_confidence: bool = False
     include_spans: bool = False
@@ -113,6 +113,8 @@ class ExtractEntitiesRequest(BaseModel):
     overlap_policy: OverlapPolicy | None = None
     format_results: bool = True
 ```
+
+`8_192` is well below the CPU OOM cliff (~32k–36k characters) and within GLiNER2.5's 4096-token window for typical English. Longer documents are out of scope (`extract_entities_long`).
 
 `MODELS: dict[ModelName, str]` so a bad name is a type error, not a KeyError in prod.
 

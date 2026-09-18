@@ -9,6 +9,11 @@ type Labels = list[LabelName] | dict[LabelName, str]
 type ExtractResult = object
 type DeleteOutcome = Literal["deleted", "missing"]
 
+
+class ExtractorOutOfMemory(Exception):
+    """Inference exceeded available memory."""
+
+
 MODELS: dict[ModelName, str] = {
     "small": "fastino/gliner2.5-small-v1",
     "base": "fastino/gliner2.5-base-v1",
@@ -16,6 +21,10 @@ MODELS: dict[ModelName, str] = {
 }
 
 _STRICT = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+# GLiNER2.5 encodes a 4096-token window. 50k-char requests OOM-kill CPU inference
+# around 32k–36k characters; 8192 stays well under that cliff for English and dense scripts.
+TEXT_MAX_LENGTH = 8_192
 
 
 def is_model_name(value: str) -> TypeGuard[ModelName]:
@@ -32,7 +41,7 @@ class ExtractEntitiesRequest(BaseModel):
     model_config = _STRICT
 
     model: ModelName = "small"
-    text: str = Field(min_length=1, max_length=50_000)
+    text: str = Field(min_length=1, max_length=TEXT_MAX_LENGTH)
     labels: Labels = Field(min_length=1)
     include_confidence: bool = False
     include_spans: bool = False

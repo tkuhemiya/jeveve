@@ -11,6 +11,7 @@ from schemas import (
     CreatedKey,
     CreateKeyRequest,
     ExtractEntitiesRequest,
+    ExtractorOutOfMemory,
     Health,
     KeyRow,
 )
@@ -60,7 +61,13 @@ def create_web_app(
         body: ExtractEntitiesRequest,
         _: str = Depends(require_api_key),
     ) -> object:
-        return extract(body)
+        try:
+            return extract(body)
+        except (MemoryError, ExtractorOutOfMemory):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Extractor ran out of memory",
+            ) from None
 
     @app.post("/v1/keys", status_code=status.HTTP_201_CREATED)
     def post_key(
