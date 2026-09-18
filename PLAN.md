@@ -45,7 +45,7 @@ Billable time includes boot plus the scaledown window.
 
 ## Layout
 
-`app.py` is the infra. Images, CPU, memory, `scaledown_window`, Volume, Secret refs, and the ASGI app are declared in Python. `modal deploy app.py` is apply. No dashboard click-ops, no Terraform. Modal has no TF provider; the SDK *is* the IaC.
+`src/app.py` is the infra. Images, CPU, memory, `scaledown_window`, Volume, Secret refs, and the ASGI app are declared in Python. `modal deploy src/app.py` is apply. No dashboard click-ops, no Terraform. Modal has no TF provider; the SDK *is* the IaC.
 
 Pin package versions in `pip_install`. Rebuilds should not float.
 
@@ -172,7 +172,7 @@ Extract hashes the bearer token and looks it up. Miss or mismatch is 401.
 Cold extract: web boot if needed, then extractor boot for that `model`. Weights come from `infer_image`.
 
 ```bash
-pip install modal && modal setup
-modal serve app.py    # mint a key, POST once per model
-modal deploy app.py
+uv sync --all-groups && uv run modal setup
+uv run modal serve src/app.py    # mint a key, POST once per model
+uv run modal deploy src/app.py
 ```
