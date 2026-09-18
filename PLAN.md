@@ -1,0 +1,150 @@
+# Plan: GLiNER2.5 on Modal
+
+One Modal app. `POST /v1/extract_entities` is `extract_entities` plus a `model` field. Bearer keys. Scale to zero.
+
+Out of scope: `classify_text`, relations, JointIE, records, `extract_entities_long`.
+
+## Models
+
+Load with `AutoExtractor.from_pretrained`. `GLiNER2.from_pretrained` is the span loader and will fail on these checkpoints.
+
+| `model` | Hub id | Params | Encoder | Language |
+| --- | --- | --- | --- | --- |
+| `small` | `fastino/gliner2.5-small-v1` | 74M | DeBERTa-v3-xsmall | English |
+| `base` | `fastino/gliner2.5-base-v1` | 194M | DeBERTa-v3-base | English |
+| `multi` | `fastino/gliner2.5-multi-v1` | 287M | mDeBERTa-v3-base | Multilingual |
+
+Default `model` is `small`. Use `multi` for non-English. Apache 2.0.
+
+One process loads one checkpoint. A parametrized Modal class (`name: str = modal.parameter()`) gives a separate scale-to-zero pool per `small` / `base` / `multi`.
+
+## Pricing
+
+[modal.com/pricing](https://modal.com/pricing), billed per second while the container exists.
+
+| Resource | Rate |
+| --- | --- |
+| CPU (physical core = 2 vCPU) | $0.0000131 / core / s |
+| Memory | $0.00000222 / GiB / s |
+| Volumes | $0.09 / GiB / month, 1 TiB free |
+| T4 | $0.000164 / s (~$0.59 / hr) |
+
+Starter: $0/month, $30 compute credit, 100 containers.
+
+Extractor spec is 2 CPU cores, 8 GiB (needed for `multi`, extra for `small`). That is ~$0.000044 / s (~$0.16 / hr). A T4 is ~$0.59 / hr for the same wall time. Stay on CPU until `base` or `multi` latency is actually too high.
+
+`min_containers=0`. `scaledown_window=60`. Idle after that is unpaid. A 24/7 warm extractor is ~$115/month and eats the Starter credit. `small` traffic does not keep a `multi` pool up.
+
+Billable time includes boot plus the scaledown window.
+
+| Pattern | Extractor cost |
+| --- | --- |
+| 10k `small` req/month × ~0.5 s | ~$0.22 |
+| 10k `multi` req/month × ~2 s | ~$0.88 |
+| 1 warm extractor, whole month | ~$115 |
+
+## Layout
+
+`app.py` only. One `modal deploy`.
+
+Web function (`@modal.asgi_app`). FastAPI. Auth, key CRUD, validation. No PyTorch. ~1 GiB CPU. This is the public URL.
+
+Extractor class. `name` is `small` | `base` | `multi`. `@modal.enter` loads that Hub id. `@modal.method` calls `extract_entities`. 2 CPU, 8 GiB, `max_inputs=1`.
+
+```python
+Extractor(name=body.model).extract.remote(...)
+```
+
+`web_image`: Debian slim, `fastapi[standard]`.
+
+`infer_image`: Debian slim, `gliner2[local]`, Hub downloads in the image build so cold start does not hit the network.
+
+```python
+MODELS = {
+    "small": "fastino/gliner2.5-small-v1",
+    "base": "fastino/gliner2.5-base-v1",
+    "multi": "fastino/gliner2.5-multi-v1",
+}
+
+infer_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install("gliner2[local]")
+    .run_commands(
+        "python -c \""
+        "from gliner2 import AutoExtractor as A;"
+        "A.from_pretrained('fastino/gliner2.5-small-v1');"
+        "A.from_pretrained('fastino/gliner2.5-base-v1');"
+        "A.from_pretrained('fastino/gliner2.5-multi-v1')\""
+    )
+)
+```
+
+Unused weights stay on disk. One checkpoint in RAM. CPU, fp32.
+
+Do not store keys in a Modal Dict. Entries expire after 7 days with no reads. SHA-256 hashes go in `/keys.json` on Volume `gliner-keys`, mounted on the web function.
+
+## HTTP
+
+`modal deploy` URL. Extract requires `Authorization: Bearer`.
+
+`POST /v1/extract_entities`. Unknown fields 422. `text` max 50k chars. Return the library object unchanged.
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `model` | `"small"` \| `"base"` \| `"multi"` | `"small"` |
+| `text` | string | required |
+| `labels` | `string[]` or `{label: description}` | required |
+| `include_confidence` | bool | `false` |
+| `include_spans` | bool | `false` |
+| `threshold` | float \| null | `null` (library default) |
+| `overlap_policy` | `"allow"` \| `"nested"` \| `"flat"` \| `"disallow"` \| `"longest"` \| null | `null` (checkpoint default `flat`) |
+| `format_results` | bool | `true` |
+
+```bash
+curl -sS -X POST "$URL/v1/extract_entities" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "multi",
+    "text": "Apple CEO Tim Cook announced iPhone 15 in Cupertino yesterday.",
+    "labels": ["company", "person", "product", "location"],
+    "include_confidence": true,
+    "include_spans": true
+  }'
+```
+
+`GET /health`. No auth. Means the web process is up, not that an extractor pool is warm.
+
+## Keys
+
+Minting a key must not boot PyTorch. Admin routes live on the web function.
+
+```bash
+modal secret create gliner-admin ADMIN_TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+```
+
+`keys.json` rows: `{id, name, hash, created_at}`. Hash is SHA-256 of the raw key. Raw key is not stored.
+
+`POST /v1/keys` with `Authorization: Bearer $ADMIN_TOKEN`, optional `{"name": "prod-bot"}`.
+
+```json
+{"id": "k_...", "name": "prod-bot", "key": "jv_..."}
+```
+
+`key` is returned once. After that, `Authorization: Bearer jv_...` on extract. One key can call any model.
+
+`GET /v1/keys` (admin): id, name, created_at.
+
+`DELETE /v1/keys/{id}` (admin).
+
+Extract hashes the bearer token and looks it up. Miss or mismatch is 401.
+
+## Run
+
+Cold extract: web boot if needed, then extractor boot for that `model`. Weights come from `infer_image`.
+
+```bash
+pip install modal && modal setup
+modal serve app.py    # mint a key, POST once per model
+modal deploy app.py
+```
