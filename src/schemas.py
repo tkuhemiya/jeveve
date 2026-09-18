@@ -23,7 +23,7 @@ MODELS: dict[ModelName, str] = {
 _STRICT = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
 # GLiNER2.5 encodes a 4096-token window. 50k-char requests OOM-kill CPU inference
-# around 32k–36k characters; 8192 stays well under that cliff for English and dense scripts.
+# around 32k-36k characters; 8192 stays well under that cliff for English and dense scripts.
 TEXT_MAX_LENGTH = 8_192
 
 

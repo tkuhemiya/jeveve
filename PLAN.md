@@ -114,7 +114,7 @@ class ExtractEntitiesRequest(BaseModel):
     format_results: bool = True
 ```
 
-`8_192` is well below the CPU OOM cliff (~32k–36k characters) and within GLiNER2.5's 4096-token window for typical English. Longer documents are out of scope (`extract_entities_long`).
+`8_192` is well below the CPU OOM cliff (~32k-36k characters) and within GLiNER2.5's 4096-token window for typical English. Longer documents are out of scope (`extract_entities_long`).
 
 `MODELS: dict[ModelName, str]` so a bad name is a type error, not a KeyError in prod.
 
