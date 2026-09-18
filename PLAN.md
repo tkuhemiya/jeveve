@@ -16,7 +16,7 @@ Load with `AutoExtractor.from_pretrained`. `GLiNER2.from_pretrained` is the span
 
 Default `model` is `small`. Use `multi` for non-English. Apache 2.0.
 
-One process loads one checkpoint. A parametrized Modal class (`name: str = modal.parameter()`) gives a separate scale-to-zero pool per `small` / `base` / `multi`.
+One process loads one checkpoint. A parametrized Modal class (`name: ModelName = modal.parameter()`) gives a separate scale-to-zero pool per `small` / `base` / `multi`.
 
 ## Pricing
 
@@ -45,22 +45,27 @@ Billable time includes boot plus the scaledown window.
 
 ## Layout
 
-`app.py` only. One `modal deploy`.
+`app.py` is the infra. Images, CPU, memory, `scaledown_window`, Volume, Secret refs, and the ASGI app are declared in Python. `modal deploy app.py` is apply. No dashboard click-ops, no Terraform. Modal has no TF provider; the SDK *is* the IaC.
 
-Web function (`@modal.asgi_app`). FastAPI. Auth, key CRUD, validation. No PyTorch. ~1 GiB CPU. This is the public URL.
+Pin package versions in `pip_install`. Rebuilds should not float.
 
-Extractor class. `name` is `small` | `base` | `multi`. `@modal.enter` loads that Hub id. `@modal.method` calls `extract_entities`. 2 CPU, 8 GiB, `max_inputs=1`.
+Web function (`@modal.asgi_app`). FastAPI. Auth, key CRUD. No PyTorch. ~1 GiB CPU. Public URL.
+
+Extractor class. `name: ModelName = modal.parameter()`. `@modal.enter` loads that Hub id. `@modal.method` takes the same Pydantic body the HTTP route already validated. 2 CPU, 8 GiB, `max_inputs=1`.
 
 ```python
-Extractor(name=body.model).extract.remote(...)
+keys_vol = modal.Volume.from_name("gliner-keys", create_if_missing=True)
+admin = modal.Secret.from_name("gliner-admin")
+
+Extractor(name=body.model).extract.remote(body)
 ```
 
-`web_image`: Debian slim, `fastapi[standard]`.
+`web_image`: Debian slim, pinned `fastapi[standard]` (pulls Pydantic v2).
 
-`infer_image`: Debian slim, `gliner2[local]`, Hub downloads in the image build so cold start does not hit the network.
+`infer_image`: Debian slim, pinned `gliner2[local]` and `pydantic`. Hub downloads in the image build so cold start does not hit the network. Pydantic is on this image because `.remote` pickle-unpickles the request model here.
 
 ```python
-MODELS = {
+MODELS: dict[ModelName, str] = {
     "small": "fastino/gliner2.5-small-v1",
     "base": "fastino/gliner2.5-base-v1",
     "multi": "fastino/gliner2.5-multi-v1",
@@ -68,7 +73,7 @@ MODELS = {
 
 infer_image = (
     modal.Image.debian_slim(python_version="3.12")
-    .pip_install("gliner2[local]")
+    .pip_install("gliner2[local]==X", "pydantic==2.Y.Z")
     .run_commands(
         "python -c \""
         "from gliner2 import AutoExtractor as A;"
@@ -83,22 +88,43 @@ Unused weights stay on disk. One checkpoint in RAM. CPU, fp32.
 
 Do not store keys in a Modal Dict. Entries expire after 7 days with no reads. SHA-256 hashes go in `/keys.json` on Volume `gliner-keys`, mounted on the web function.
 
+## Types
+
+Modal's own FastAPI example is a Pydantic body. `.remote(*args)` cloudpickles; Pydantic models pickle. One `BaseModel` is the HTTP schema *and* the extractor argument. No `dict`, no `Any`.
+
+Treat the boundary like serde: `extra="forbid"`, `Literal` unions, `Field` constraints. FastAPI turns validation errors into 422.
+
+```python
+from typing import Literal
+from pydantic import BaseModel, ConfigDict, Field
+
+type ModelName = Literal["small", "base", "multi"]
+type OverlapPolicy = Literal["allow", "nested", "flat", "disallow", "longest"]
+type Labels = list[str] | dict[str, str]
+
+class ExtractEntitiesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model: ModelName = "small"
+    text: str = Field(min_length=1, max_length=50_000)
+    labels: Labels
+    include_confidence: bool = False
+    include_spans: bool = False
+    threshold: float | None = None
+    overlap_policy: OverlapPolicy | None = None
+    format_results: bool = True
+```
+
+`MODELS: dict[ModelName, str]` so a bad name is a type error, not a KeyError in prod.
+
+Extract response stays the library object. Do not invent a response model until GLiNER2.5's return shape is pinned.
+
+Key routes get the same treatment (`extra="forbid"`, typed create body and list rows). Hash is `str`, not a loose dict value.
+
 ## HTTP
 
 `modal deploy` URL. Extract requires `Authorization: Bearer`.
 
-`POST /v1/extract_entities`. Unknown fields 422. `text` max 50k chars. Return the library object unchanged.
-
-| Field | Type | Default |
-| --- | --- | --- |
-| `model` | `"small"` \| `"base"` \| `"multi"` | `"small"` |
-| `text` | string | required |
-| `labels` | `string[]` or `{label: description}` | required |
-| `include_confidence` | bool | `false` |
-| `include_spans` | bool | `false` |
-| `threshold` | float \| null | `null` (library default) |
-| `overlap_policy` | `"allow"` \| `"nested"` \| `"flat"` \| `"disallow"` \| `"longest"` \| null | `null` (checkpoint default `flat`) |
-| `format_results` | bool | `true` |
+`POST /v1/extract_entities` body is `ExtractEntitiesRequest`. Unknown fields 422. Return the library object unchanged.
 
 ```bash
 curl -sS -X POST "$URL/v1/extract_entities" \
@@ -119,11 +145,13 @@ curl -sS -X POST "$URL/v1/extract_entities" \
 
 Minting a key must not boot PyTorch. Admin routes live on the web function.
 
+`modal secret create` is the one CLI exception. The token must not live in git. Code only `from_name`s it.
+
 ```bash
 modal secret create gliner-admin ADMIN_TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
 ```
 
-`keys.json` rows: `{id, name, hash, created_at}`. Hash is SHA-256 of the raw key. Raw key is not stored.
+`keys.json` is a Pydantic list of `{id, name, hash, created_at}`. Hash is SHA-256 of the raw key. Raw key is not stored.
 
 `POST /v1/keys` with `Authorization: Bearer $ADMIN_TOKEN`, optional `{"name": "prod-bot"}`.
 
