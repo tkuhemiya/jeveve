@@ -2,25 +2,34 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import NewType, Protocol
 
-from schemas import CreatedKey, KeyRow, StoredKey
+from pydantic import TypeAdapter
+
+from schemas import CreatedKey, DeleteOutcome, KeyRow, StoredKey
+
+ApiKey = NewType("ApiKey", str)
+KeyHash = NewType("KeyHash", str)
 
 KEY_PREFIX = "jv_"
 ID_PREFIX = "k_"
+STORED_KEYS = TypeAdapter(list[StoredKey])
 
 
-def hash_key(raw: str) -> str:
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+def hash_secret(raw: str) -> KeyHash:
+    return KeyHash(hashlib.sha256(raw.encode("utf-8")).hexdigest())
 
 
-def mint_api_key() -> str:
-    return KEY_PREFIX + secrets.token_urlsafe(32)
+def secrets_equal(left: str, right: str) -> bool:
+    return hmac.compare_digest(hash_secret(left), hash_secret(right))
+
+
+def mint_api_key() -> ApiKey:
+    return ApiKey(KEY_PREFIX + secrets.token_urlsafe(32))
 
 
 def mint_key_id() -> str:
@@ -54,18 +63,12 @@ class FileKeyStore:
             self._reload()
         if not self.path.exists():
             return []
-        raw = json.loads(self.path.read_text(encoding="utf-8"))
-        return [StoredKey.model_validate(item) for item in raw]
+        return STORED_KEYS.validate_json(self.path.read_bytes())
 
     def save(self, keys: list[StoredKey]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(
-            [key.model_dump() for key in keys],
-            indent=2,
-            sort_keys=True,
-        )
         tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(payload + "\n", encoding="utf-8")
+        tmp.write_bytes(STORED_KEYS.dump_json(keys, indent=2) + b"\n")
         tmp.replace(self.path)
         if self._commit is not None:
             self._commit()
@@ -83,7 +86,7 @@ class MemoryKeyStore:
 
 
 def find_by_bearer(keys: list[StoredKey], bearer: str) -> StoredKey | None:
-    digest = hash_key(bearer)
+    digest = hash_secret(bearer)
     for key in keys:
         if hmac.compare_digest(key.hash, digest):
             return key
@@ -91,14 +94,14 @@ def find_by_bearer(keys: list[StoredKey], bearer: str) -> StoredKey | None:
 
 
 def create_key(store: KeyStore, *, name: str | None) -> CreatedKey:
-    keys = store.load()
     raw = mint_api_key()
     record = StoredKey(
         id=mint_key_id(),
         name=name,
-        hash=hash_key(raw),
+        hash=hash_secret(raw),
         created_at=utc_now(),
     )
+    keys = store.load()
     keys.append(record)
     store.save(keys)
     return CreatedKey(
@@ -110,15 +113,13 @@ def create_key(store: KeyStore, *, name: str | None) -> CreatedKey:
 
 
 def list_keys(store: KeyStore) -> list[KeyRow]:
-    return [
-        KeyRow(id=key.id, name=key.name, created_at=key.created_at) for key in store.load()
-    ]
+    return [key.to_row() for key in store.load()]
 
 
-def delete_key(store: KeyStore, key_id: str) -> bool:
+def delete_key(store: KeyStore, key_id: str) -> DeleteOutcome:
     keys = store.load()
     kept = [key for key in keys if key.id != key_id]
     if len(kept) == len(keys):
-        return False
+        return "missing"
     store.save(kept)
-    return True
+    return "deleted"

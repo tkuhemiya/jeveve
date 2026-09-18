@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import modal
 
 from keys import FileKeyStore
-from schemas import MODELS, ExtractEntitiesRequest
+from schemas import MODELS, ExtractEntitiesRequest, ExtractResult, extract_call, hub_id_for
 from web import admin_token_from_env, create_web_app
 
 app = modal.App("gliner")
@@ -16,6 +15,7 @@ admin = modal.Secret.from_name("gliner-admin")
 
 KEYS_PATH = Path("/keys/keys.json")
 SRC_DIR = Path(__file__).resolve().parent
+_PRELOAD = ";".join(f"A.from_pretrained({hub_id!r})" for hub_id in MODELS.values())
 
 web_image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -32,27 +32,8 @@ infer_image = (
     .pip_install("gliner2[local]==2.0.0", "pydantic==2.13.5")
     .add_local_dir(str(SRC_DIR), remote_path="/pkg")
     .env({"HF_HOME": "/root/.cache/huggingface", "PYTHONPATH": "/pkg"})
-    .run_commands(
-        "python -c \""
-        "from gliner2 import AutoExtractor as A;"
-        "A.from_pretrained('fastino/gliner2.5-small-v1');"
-        "A.from_pretrained('fastino/gliner2.5-base-v1');"
-        "A.from_pretrained('fastino/gliner2.5-multi-v1')\""
-    )
+    .run_commands(f'python -c "from gliner2 import AutoExtractor as A; {_PRELOAD}"')
 )
-
-
-def _extract_kwargs(body: ExtractEntitiesRequest) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {
-        "include_confidence": body.include_confidence,
-        "include_spans": body.include_spans,
-        "format_results": body.format_results,
-    }
-    if body.threshold is not None:
-        kwargs["threshold"] = body.threshold
-    if body.overlap_policy is not None:
-        kwargs["overlap_policy"] = body.overlap_policy
-    return kwargs
 
 
 @app.cls(
@@ -70,23 +51,22 @@ class Extractor:
 
     @modal.enter()
     def load(self) -> None:
-        from gliner2 import AutoExtractor
+        from gliner2 import AutoExtractor  # ty: ignore[unresolved-import]
 
-        if self.name not in MODELS:
-            raise ValueError(f"unknown model {self.name!r}")
-        self.extractor = AutoExtractor.from_pretrained(MODELS[self.name])
+        self.extractor = AutoExtractor.from_pretrained(hub_id_for(self.name))
 
     @modal.method()
-    def extract(self, body: ExtractEntitiesRequest) -> Any:
+    def extract(self, body: ExtractEntitiesRequest) -> ExtractResult:
         return self.extractor.extract_entities(
             body.text,
             body.labels,
-            **_extract_kwargs(body),
+            **extract_call(body),
         )
 
 
-def _dispatch(body: ExtractEntitiesRequest) -> Any:
-    return Extractor(name=body.model).extract.remote(body)
+def _dispatch(body: ExtractEntitiesRequest) -> ExtractResult:
+    extractor = Extractor(name=body.model)  # ty: ignore[unknown-argument]
+    return extractor.extract.remote(body)
 
 
 @app.function(
