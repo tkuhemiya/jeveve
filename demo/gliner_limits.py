@@ -827,12 +827,12 @@ def _(api_key, ignite, ping, timeout, url):
     if ping.value:
         try:
             health = healthcheck(url.value, timeout=min(90.0, float(timeout.value)))
-            kind = "warn" if health["payload"].get("status") == "degraded" else "success"
+            health_kind = "warn" if health["payload"].get("status") == "degraded" else "success"
             status_bits.append(
                 mo.md(
                     f"**health** `{health['payload'].get('status')}` in `{health['elapsed']:.2f}s`\n\n"
                     f"```json\n{json.dumps(health['payload'], indent=2)}\n```"
-                ).callout(kind=kind)
+                ).callout(kind=health_kind)
             )
         except Exception as exc:
             status_bits.append(mo.md(f"health failed: `{exc}`").callout(kind="danger"))
@@ -853,15 +853,15 @@ def _(api_key, ignite, ping, timeout, url):
             )
             lines = []
             slow = False
-            for item in ignited:
-                timing = item.get("timing") or {}
+            for hit in ignited:
+                timing = hit.get("timing") or {}
                 mark = " SLOW" if timing.get("slow") else ""
                 slow = slow or bool(timing.get("slow"))
                 load = timing.get("load_s")
                 wait = timing.get("wait_s")
                 lines.append(
-                    f"- `{item['model']}`{mark} · {len(item['rows'])} spans · "
-                    f"client `{item['elapsed']:.1f}s` · load `{load}`s · wait `{wait}`s"
+                    f"- `{hit['model']}`{mark} · {len(hit['rows'])} spans · "
+                    f"client `{hit['elapsed']:.1f}s` · load `{load}`s · wait `{wait}`s"
                 )
             status_bits.append(
                 mo.md("**extractors are up**\n\n" + "\n".join(lines)).callout(
@@ -1143,9 +1143,9 @@ def _(
     )
     policy = None if overlap.value.startswith("(") else overlap.value
     thresh = float(threshold.value) if threshold_on.value else None
-    kind = case["kind"]
+    case_kind = case["kind"]
     try:
-        if kind == "compare":
+        if case_kind == "compare":
             specs = [
                 {
                     "model": name,
@@ -1168,7 +1168,7 @@ def _(
                     render_compare(compare_results),
                 ]
             )
-        elif kind == "compare_pair":
+        elif case_kind == "compare_pair":
             specs = [
                 {
                     "model": name,
@@ -1191,7 +1191,7 @@ def _(
                     render_compare(pair_results),
                 ]
             )
-        elif kind == "overlap":
+        elif case_kind == "overlap":
             specs = [
                 {
                     "model": case["model"],
@@ -1209,10 +1209,10 @@ def _(
                 timeout=float(timeout.value),
             )
             panels = []
-            for item, name in zip(overlap_results, OVERLAP_POLICIES, strict=True):
-                item = dict(item)
-                item["model"] = f"{item['model']} / {name}"
-                panels.append(item)
+            for panel, policy_name in zip(overlap_results, OVERLAP_POLICIES, strict=True):
+                panel = dict(panel)
+                panel["model"] = f"{panel['model']} / {policy_name}"
+                panels.append(panel)
             out = mo.vstack(
                 [
                     mo.md(f"## {case_name.value}"),
