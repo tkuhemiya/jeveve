@@ -92,6 +92,17 @@ class CreatedKey(KeyRow):
     key: Annotated[str, Field(pattern=r"^jv_")]
 
 
+class StartHealth(TypedDict):
+    load_s: float
+    infer_s: float
+    wait_s: float
+    cold: bool
+    slow: bool
+    extracts: int
+    at: str
+
+
 class Health(TypedDict):
-    status: Literal["ok"]
+    status: Literal["ok", "degraded"]
     models: NotRequired[dict[ModelName, Literal["ready", "unloaded"]]]
+    starts: NotRequired[dict[ModelName, StartHealth]]

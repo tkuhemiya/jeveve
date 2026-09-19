@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 from typing import Any, Literal
 
-from schemas import MODELS, ModelName, hub_id_for, is_model_name
+from schemas import (
+    MODELS,
+    ExtractEntitiesRequest,
+    ModelName,
+    extract_call,
+    hub_id_for,
+    is_model_name,
+)
+from timing import SLOW_LOAD_S, ExtractEnvelope, ExtractTiming, LoadStats, log_start
 
 type ExtractorFactory = Callable[[str], Any]
 type ModelReadiness = Literal["ready", "unloaded"]
@@ -48,6 +57,7 @@ class ExtractorCache:
     def __init__(self, factory: ExtractorFactory | None = None) -> None:
         self._factory = factory or _default_factory
         self._ready: dict[str, Any] = {}
+        self._stats: dict[str, LoadStats] = {}
         self._meta_lock = threading.Lock()
         self._load_lock = threading.Lock()
         self._model_locks: dict[str, threading.Lock] = {}
@@ -75,16 +85,30 @@ class ExtractorCache:
                 if ready is not None:
                     return ready
                 try:
+                    started = time.perf_counter()
                     extractor = self._factory(hub_id_for(name))
+                    load_s = time.perf_counter() - started
                 except ExtractorLoadError:
                     raise
                 except Exception as exc:
                     raise ExtractorLoadError(name) from exc
                 self._ready[name] = extractor
+                self._stats[name] = LoadStats(
+                    model=name, load_s=load_s, loaded_at=time.time()
+                )
+                log_start(
+                    "extractor_load",
+                    model=name,
+                    load_s=round(load_s, 3),
+                    slow=load_s >= SLOW_LOAD_S,
+                )
                 return extractor
 
     def status(self) -> dict[ModelName, ModelReadiness]:
         return {name: ("ready" if name in self._ready else "unloaded") for name in MODELS}
+
+    def load_stats(self, name: str) -> LoadStats | None:
+        return self._stats.get(name)
 
 
 _CACHE = ExtractorCache()
@@ -94,8 +118,50 @@ def load_extractor(name: str, *, cache: ExtractorCache | None = None) -> Any:
     return (cache or _CACHE).get(name)
 
 
+def load_stats(name: str, *, cache: ExtractorCache | None = None) -> LoadStats | None:
+    return (cache or _CACHE).load_stats(name)
+
+
 def model_status(*, cache: ExtractorCache | None = None) -> dict[ModelName, ModelReadiness]:
     return (cache or _CACHE).status()
+
+
+def run_timed_extract(
+    body: ExtractEntitiesRequest,
+    *,
+    cache: ExtractorCache | None = None,
+    extracts_before: int = 0,
+) -> ExtractEnvelope:
+    cache = cache or _CACHE
+    extractor = load_extractor(body.model, cache=cache)
+    stats = cache.load_stats(body.model)
+    started = time.perf_counter()
+    result = extractor.extract_entities(
+        body.text,
+        body.labels,
+        **extract_call(body),
+    )
+    infer_s = time.perf_counter() - started
+    load_s = stats.load_s if stats is not None else 0.0
+    extracts = extracts_before + 1
+    timing = ExtractTiming(
+        model=body.model,
+        load_s=load_s,
+        infer_s=infer_s,
+        wait_s=0.0,
+        cold=extracts_before == 0,
+        extracts=extracts,
+    )
+    log_start(
+        "extractor_infer",
+        model=body.model,
+        load_s=round(load_s, 3),
+        infer_s=round(infer_s, 3),
+        cold=timing.cold,
+        slow=timing.slow,
+        extracts=extracts,
+    )
+    return ExtractEnvelope(result=result, timing=timing)
 
 
 def is_extractor_startup_failure(exc: BaseException) -> bool:

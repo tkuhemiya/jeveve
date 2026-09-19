@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from extractors import ExtractorLoadError
 from keys import FileKeyStore, MemoryKeyStore, create_key
 from schemas import ExtractEntitiesRequest
+from timing import ExtractEnvelope, ExtractTiming
 from web import KEY_STORE_UNAVAILABLE, create_web_app
 
 ADMIN = "admin-test-token"
@@ -256,3 +257,60 @@ def test_raw_format_results_are_returned_as_json() -> None:
     )
     assert response.status_code == 200
     assert response.json() == [["Apple", 0.98, 0, 5]]
+
+
+def test_extract_timing_headers_and_health_starts() -> None:
+    def timed_extract(body: ExtractEntitiesRequest) -> object:
+        return ExtractEnvelope(
+            result={"model": body.model, "entities": {"company": ["Apple"]}},
+            timing=ExtractTiming(
+                model=body.model,
+                load_s=41.2,
+                infer_s=0.4,
+                wait_s=0.0,
+                cold=True,
+                extracts=1,
+            ),
+        )
+
+    store = MemoryKeyStore()
+    created = create_key(store, name="bot")
+    client = TestClient(
+        create_web_app(key_store=store, admin_token=ADMIN, extract=timed_extract)
+    )
+    response = client.post(
+        "/v1/extract_entities",
+        headers={"Authorization": f"Bearer {created.key}"},
+        json={"text": "Apple", "labels": ["company"]},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"model": "small", "entities": {"company": ["Apple"]}}
+    assert response.headers["x-gliner-model"] == "small"
+    assert response.headers["x-gliner-load-s"] == "41.200"
+    assert response.headers["x-gliner-infer-s"] == "0.400"
+    assert response.headers["x-gliner-cold"] == "true"
+    assert response.headers["x-gliner-slow"] == "true"
+    assert float(response.headers["x-gliner-wait-s"]) >= 0.0
+
+    health = client.get("/health")
+    assert health.status_code == 200
+    body = health.json()
+    assert body["status"] == "degraded"
+    assert body["starts"]["small"]["load_s"] == 41.2
+    assert body["starts"]["small"]["slow"] is True
+    assert body["starts"]["small"]["cold"] is True
+
+
+def test_fast_extract_keeps_health_ok() -> None:
+    client, store = make_client()
+    created = create_key(store, name="bot")
+    extract = client.post(
+        "/v1/extract_entities",
+        headers={"Authorization": f"Bearer {created.key}"},
+        json={"text": "Apple", "labels": ["company"]},
+    )
+    assert extract.status_code == 200
+    assert extract.headers["x-gliner-slow"] == "false"
+    health = client.get("/health")
+    assert health.json()["status"] == "ok"
+    assert health.json()["starts"]["small"]["slow"] is False
