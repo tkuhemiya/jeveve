@@ -207,6 +207,12 @@ with app.setup:
             )
         return "<div class='legend'>" + "".join(chips) + "</div>"
 
+    def _header_float(headers: Any, name: str) -> float | None:
+        raw = headers.get(name)
+        if raw is None or raw == "":
+            return None
+        return float(raw)
+
     def extract_entities(
         *,
         url: str,
@@ -267,6 +273,14 @@ with app.setup:
                     "text": text,
                     "labels": labels,
                     "body": body,
+                    "timing": {
+                        "load_s": _header_float(response.headers, "x-gliner-load-s"),
+                        "infer_s": _header_float(response.headers, "x-gliner-infer-s"),
+                        "wait_s": _header_float(response.headers, "x-gliner-wait-s"),
+                        "cold": response.headers.get("x-gliner-cold") == "true",
+                        "slow": response.headers.get("x-gliner-slow") == "true",
+                        "extracts": response.headers.get("x-gliner-extracts"),
+                    },
                 }
         raise RuntimeError(f"extractor not ready after {attempts} tries: {last_error}")
 
@@ -813,11 +827,12 @@ def _(api_key, ignite, ping, timeout, url):
     if ping.value:
         try:
             health = healthcheck(url.value, timeout=min(90.0, float(timeout.value)))
+            kind = "warn" if health["payload"].get("status") == "degraded" else "success"
             status_bits.append(
                 mo.md(
-                    f"**health** `{health['status']}` in `{health['elapsed']:.2f}s`\n\n"
+                    f"**health** `{health['payload'].get('status')}` in `{health['elapsed']:.2f}s`\n\n"
                     f"```json\n{json.dumps(health['payload'], indent=2)}\n```"
-                ).callout(kind="success")
+                ).callout(kind=kind)
             )
         except Exception as exc:
             status_bits.append(mo.md(f"health failed: `{exc}`").callout(kind="danger"))
@@ -836,13 +851,21 @@ def _(api_key, ignite, ping, timeout, url):
                 api_key=api_key.value,
                 timeout=float(timeout.value),
             )
-            lines = [
-                f"- `{item['model']}` · {len(item['rows'])} spans · `{item['elapsed']:.1f}s` · {item['attempts']} HTTP attempt(s)"
-                for item in ignited
-            ]
+            lines = []
+            slow = False
+            for item in ignited:
+                timing = item.get("timing") or {}
+                mark = " SLOW" if timing.get("slow") else ""
+                slow = slow or bool(timing.get("slow"))
+                load = timing.get("load_s")
+                wait = timing.get("wait_s")
+                lines.append(
+                    f"- `{item['model']}`{mark} · {len(item['rows'])} spans · "
+                    f"client `{item['elapsed']:.1f}s` · load `{load}`s · wait `{wait}`s"
+                )
             status_bits.append(
                 mo.md("**extractors are up**\n\n" + "\n".join(lines)).callout(
-                    kind="success"
+                    kind="warn" if slow else "success"
                 )
             )
         except Exception as exc:
@@ -972,6 +995,25 @@ def confidence_chart(rows: list[dict[str, Any]], title: str) -> Any:
 
 
 @app.function
+def timing_pills(timing: dict[str, Any]) -> list[tuple[str, str]]:
+    pills: list[tuple[str, str]] = []
+    load_s = timing.get("load_s")
+    infer_s = timing.get("infer_s")
+    wait_s = timing.get("wait_s")
+    if wait_s is not None:
+        pills.append(("server wait", f"{wait_s:.1f}s"))
+    if load_s is not None:
+        pills.append(("load", f"{load_s:.1f}s"))
+    if infer_s is not None:
+        pills.append(("infer", f"{infer_s:.2f}s"))
+    if timing.get("cold"):
+        pills.append(("start", "cold"))
+    if timing.get("slow"):
+        pills.append(("start", "SLOW"))
+    return pills
+
+
+@app.function
 def render_single(result: dict[str, Any], heading: str | None = None) -> Any:
     rows = result["rows"]
     labels = sorted({str(row["label"]) for row in rows})
@@ -984,11 +1026,20 @@ def render_single(result: dict[str, Any], heading: str | None = None) -> Any:
                 ("model", str(result["model"])),
                 ("spans", str(len(rows))),
                 ("labels hit", str(len(labels))),
-                ("latency", f"{result['elapsed']:.1f}s"),
-                ("HTTP tries", str(result["attempts"])),
+                ("client wait", f"{result['elapsed']:.1f}s"),
+                *timing_pills(result.get("timing") or {}),
             ]
         )
     )
+    timing = result.get("timing") or {}
+    if timing.get("slow"):
+        bits.append(
+            mo.md(
+                f"**slow start** load `{timing.get('load_s')}s` · infer "
+                f"`{timing.get('infer_s')}s` · server wait `{timing.get('wait_s')}s` "
+                f"· cold `{timing.get('cold')}`. Load >= 30s or wait >= 60s is degraded."
+            ).callout(kind="warn")
+        )
     bits.append(mo.Html(legend_html(labels)))
     bits.append(mo.Html(highlight_html(result["text"], rows)))
     if rows:
@@ -1030,7 +1081,8 @@ def render_compare(results: list[dict[str, Any]]) -> Any:
                         [
                             ("spans", str(len(rows))),
                             ("types", str(len(labels))),
-                            ("latency", f"{result['elapsed']:.1f}s"),
+                            ("client wait", f"{result['elapsed']:.1f}s"),
+                            *timing_pills(result.get("timing") or {}),
                         ]
                     ),
                     mo.Html(legend_html(labels)),

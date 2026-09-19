@@ -8,7 +8,7 @@ Production app `gliner`, web function:
 
 https://tkuhemiya--gliner-web.modal.run
 
-`GET /health` is public. It only means the web process is up and `keys.json` is readable, not that an extractor is warm.
+`GET /health` is public. It only means the web process is up and `keys.json` is readable, not that an extractor is warm. After at least one extract on that web container it also reports last `starts` (`load_s` / `infer_s` / `wait_s`). `status` becomes `"degraded"` when load took >= 30s or the caller waited >= 60s — that is how we notice an unacceptable cold start without failing the request.
 
 | `model` | Checkpoint | Use |
 | --- | --- | --- |
@@ -62,6 +62,8 @@ curl -sS -X POST "$URL/v1/extract_entities" \
 ```
 
 Use `"model": "multi"` for non-English text. Labels can be a list or a map of name → description (`{"person": "A named human"}`). Unknown JSON fields are 422. Missing or wrong bearer is 401.
+
+The JSON body is still the GLiNER library object. Startup is in response headers: `x-gliner-load-s` (checkpoint `from_pretrained`), `x-gliner-infer-s` (forward pass), `x-gliner-wait-s` (what the caller paid, including container boot). `x-gliner-cold` is the first extract on that worker. `x-gliner-slow` is `true` when load >= 30s or wait >= 60s.
 
 First extract after idle boots the web function, then that model's pool. Key create and delete run on a single web container so concurrent mints cannot overwrite `keys.json`.
 

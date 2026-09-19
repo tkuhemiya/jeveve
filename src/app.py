@@ -2,9 +2,15 @@ from pathlib import Path
 
 import modal
 
-from extractors import ExtractorLoadError, is_extractor_startup_failure, load_extractor
+from extractors import (
+    ExtractorLoadError,
+    is_extractor_startup_failure,
+    load_extractor,
+    run_timed_extract,
+)
 from keys import FileKeyStore
-from schemas import MODELS, ExtractEntitiesRequest, ExtractResult, extract_call
+from schemas import MODELS, ExtractEntitiesRequest
+from timing import ExtractEnvelope, as_envelope
 from web import admin_token_from_env, create_web_app
 
 app = modal.App("gliner")
@@ -62,31 +68,35 @@ class Extractor:
     @modal.enter()
     def load(self) -> None:
         # Sole warm-load path. load_extractor serializes from_pretrained so a
-        # cold burst cannot race two checkpoints in one process.
+        # cold burst cannot race two checkpoints in one process. Timing is
+        # recorded on the cache and reported on the first extract.
         self.extractor = load_extractor(self.name)
+        self.extracts = 0
 
     @modal.method()
-    def extract(self, body: ExtractEntitiesRequest) -> ExtractResult:
-        extractor = getattr(self, "extractor", None)
-        if extractor is None:
+    def extract(self, body: ExtractEntitiesRequest) -> ExtractEnvelope:
+        if getattr(self, "extractor", None) is None:
             raise ExtractorLoadError(self.name)
-        return extractor.extract_entities(
-            body.text,
-            body.labels,
-            **extract_call(body),
+        envelope = run_timed_extract(
+            body, extracts_before=getattr(self, "extracts", 0)
         )
+        self.extracts = envelope.timing.extracts
+        return envelope
 
 
-def _dispatch(body: ExtractEntitiesRequest) -> ExtractResult:
+def _dispatch(body: ExtractEntitiesRequest) -> ExtractEnvelope:
     extractor = Extractor(name=body.model)  # ty: ignore[unknown-argument]
     try:
-        return extractor.extract.remote(body)
+        raw = extractor.extract.remote(body)
     except ExtractorLoadError:
         raise
     except Exception as exc:
         if is_extractor_startup_failure(exc):
             raise ExtractorLoadError(body.model) from exc
         raise
+    if isinstance(raw, ExtractEnvelope):
+        return raw
+    return as_envelope(raw, model=body.model, wait_s=0.0)
 
 
 @app.function(

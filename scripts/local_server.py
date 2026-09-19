@@ -18,9 +18,9 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from extractors import load_extractor, model_status
+from extractors import model_status, run_timed_extract
 from keys import FileKeyStore
-from schemas import ExtractEntitiesRequest, extract_call
+from schemas import ExtractEntitiesRequest
 from web import admin_token_from_env, create_web_app
 
 DATA_DIR = ROOT / ".local-data"
@@ -28,13 +28,13 @@ HOST = "127.0.0.1"
 PORT = 8765
 
 
+_EXTRACTS: dict[str, int] = {}
+
+
 def extract(body: ExtractEntitiesRequest) -> object:
-    extractor = load_extractor(body.model)
-    return extractor.extract_entities(
-        body.text,
-        body.labels,
-        **extract_call(body),
-    )
+    envelope = run_timed_extract(body, extracts_before=_EXTRACTS.get(body.model, 0))
+    _EXTRACTS[body.model] = envelope.timing.extracts
+    return envelope
 
 
 def main() -> None:

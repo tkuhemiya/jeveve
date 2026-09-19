@@ -46,4 +46,4 @@ The notebook ships a working default key so the catalog runs without extra setup
 
 ## Cold start
 
-`GET /health` only means the web process is up. The first extract for a model boots that pool (often >150s). Modal then 303s to a result URL; the client uses `httpx` with `follow_redirects=True` and retries `503` + `Retry-After`. Click **Ignite small + base + multi** once before running the catalog.
+`GET /health` only means the web process is up. After an extract, `starts` on `/health` and `x-gliner-*` headers on extract show load vs infer vs total wait. `x-gliner-slow: true` (load >= 30s or wait >= 60s) is the "this start is too slow" flag. Click **Ignite small + base + multi** once before running the catalog.

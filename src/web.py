@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Callable
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -25,6 +27,7 @@ from schemas import (
     KeyRow,
     ModelName,
 )
+from timing import StartLog, as_envelope, timing_headers
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -48,8 +51,10 @@ def create_web_app(
     admin_token: str,
     extract: Callable[[ExtractEntitiesRequest], object],
     model_status: Callable[[], dict[ModelName, ModelReadiness]] | None = None,
+    start_log: StartLog | None = None,
 ) -> FastAPI:
     app = FastAPI(title="GLiNER2.5", version="0.1.0")
+    starts = start_log or StartLog()
 
     @app.exception_handler(KeyStoreCorrupt)
     def key_store_corrupt(_request: Request, _exc: KeyStoreCorrupt) -> JSONResponse:
@@ -78,9 +83,12 @@ def create_web_app(
     @app.get("/health")
     def health() -> Health:
         key_store.load()
-        payload: Health = {"status": "ok"}
+        payload: Health = {"status": "degraded" if starts.degraded() else "ok"}
         if model_status is not None:
             payload["models"] = model_status()
+        snapshot = starts.snapshot()
+        if snapshot:
+            payload["starts"] = snapshot
         return payload
 
     @app.post("/v1/extract_entities", response_model=None)
@@ -88,14 +96,23 @@ def create_web_app(
         body: ExtractEntitiesRequest,
         _: str = Depends(require_api_key),
     ) -> object:
+        started = time.perf_counter()
         try:
-            return extract(body)
+            raw = extract(body)
         except ExtractorLoadError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"Model {exc.model!r} is not ready; retry shortly.",
                 headers={"Retry-After": str(exc.retry_after)},
             ) from exc
+        envelope = as_envelope(
+            raw, model=body.model, wait_s=time.perf_counter() - started
+        )
+        starts.record(envelope.timing)
+        return JSONResponse(
+            content=jsonable_encoder(envelope.result),
+            headers=timing_headers(envelope.timing),
+        )
 
     @app.post("/v1/keys", status_code=status.HTTP_201_CREATED)
     def post_key(
