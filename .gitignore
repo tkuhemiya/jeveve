@@ -6,3 +6,5 @@ __pycache__/
 .local-data/
 *.pyc
 .python-version.bak
+__marimo__/
+.marimo/

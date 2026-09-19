@@ -137,6 +137,16 @@ uv run ruff check .
 uv run ty check src tests
 ```
 
+## Demo
+
+Interactive [marimo](https://docs.marimo.io/) notebook that hits the live extract API with `small`, `base`, and `multi` (nested overlap policies, described medical/PII/legal schemas, multilingual + code-switch, a 12k-character earnings call). Dependencies live in the notebook's inline script metadata — uv sandbox, no project install:
+
+```bash
+uvx marimo edit --sandbox demo/gliner_limits.py
+```
+
+Run it as an app with `uvx marimo run --sandbox demo/gliner_limits.py`. First extract after idle boots the web function, then that model's pool. httpx follows Modal's 150s 303 result redirects. Override `GLINER_URL` / `GLINER_API_KEY` if needed. More in [`demo/README.md`](demo/README.md).
+
 ## Layout
 
 | Path | What |
@@ -146,4 +156,5 @@ uv run ty check src tests
 | `src/timing.py` | Extract load/infer/wait headers and `/health` start log |
 | `src/keys.py` | SHA-256 key store (`gliner-keys` volume) |
 | `src/schemas.py` | Request models |
+| `demo/` | uv-sandboxed marimo notebook against the live extract API |
 | `PLAN.md` | Spec (pricing, types, out of scope) |
