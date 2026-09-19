@@ -2,12 +2,27 @@ from pathlib import Path
 
 import modal
 
-from extractors import ExtractorLoadError, is_extractor_startup_failure, load_extractor
+from extractors import (
+    ExtractorLoadError,
+    is_extractor_startup_failure,
+    load_extractor,
+    run_timed_extract,
+)
 from keys import FileKeyStore
-from schemas import MODELS, ExtractEntitiesRequest, ExtractResult, extract_call
+from schemas import MODELS, ExtractEntitiesRequest
+from timing import ExtractEnvelope, as_envelope
 from web import admin_token_from_env, create_web_app
 
 app = modal.App("gliner")
+
+# Extractor @modal.enter loads a 74-287M checkpoint. Cold start is minutes.
+# The web function blocks on extract.remote(), so its timeout must outlive
+# extractor startup plus one inference. Modal's HTTP layer 303s every 150s;
+# that is not a substitute for a long enough function timeout (default 300s).
+EXTRACTOR_TIMEOUT = 300
+EXTRACTOR_STARTUP_TIMEOUT = 600
+WEB_TIMEOUT = EXTRACTOR_STARTUP_TIMEOUT + EXTRACTOR_TIMEOUT
+WEB_STARTUP_TIMEOUT = 60
 
 keys_vol = modal.Volume.from_name("gliner-keys", create_if_missing=True)
 admin = modal.Secret.from_name("gliner-admin")
@@ -44,9 +59,8 @@ infer_image = (
     memory=8192,
     min_containers=0,
     scaledown_window=60,
-    timeout=300,
-    startup_timeout=600,
-    single_use_containers=True,
+    timeout=EXTRACTOR_TIMEOUT,
+    startup_timeout=EXTRACTOR_STARTUP_TIMEOUT,
 )
 class Extractor:
     name: str = modal.parameter()
@@ -54,31 +68,35 @@ class Extractor:
     @modal.enter()
     def load(self) -> None:
         # Sole warm-load path. load_extractor serializes from_pretrained so a
-        # cold burst cannot race two checkpoints in one process.
+        # cold burst cannot race two checkpoints in one process. Timing is
+        # recorded on the cache and reported on the first extract.
         self.extractor = load_extractor(self.name)
+        self.extracts = 0
 
     @modal.method()
-    def extract(self, body: ExtractEntitiesRequest) -> ExtractResult:
-        extractor = getattr(self, "extractor", None)
-        if extractor is None:
+    def extract(self, body: ExtractEntitiesRequest) -> ExtractEnvelope:
+        if getattr(self, "extractor", None) is None:
             raise ExtractorLoadError(self.name)
-        return extractor.extract_entities(
-            body.text,
-            body.labels,
-            **extract_call(body),
+        envelope = run_timed_extract(
+            body, extracts_before=getattr(self, "extracts", 0)
         )
+        self.extracts = envelope.timing.extracts
+        return envelope
 
 
-def _dispatch(body: ExtractEntitiesRequest) -> ExtractResult:
+def _dispatch(body: ExtractEntitiesRequest) -> ExtractEnvelope:
     extractor = Extractor(name=body.model)  # ty: ignore[unknown-argument]
     try:
-        return extractor.extract.remote(body)
+        raw = extractor.extract.remote(body)
     except ExtractorLoadError:
         raise
     except Exception as exc:
         if is_extractor_startup_failure(exc):
             raise ExtractorLoadError(body.model) from exc
         raise
+    if isinstance(raw, ExtractEnvelope):
+        return raw
+    return as_envelope(raw, model=body.model, wait_s=0.0)
 
 
 @app.function(
@@ -88,6 +106,8 @@ def _dispatch(body: ExtractEntitiesRequest) -> ExtractResult:
     min_containers=0,
     max_containers=1,
     scaledown_window=60,
+    timeout=WEB_TIMEOUT,
+    startup_timeout=WEB_STARTUP_TIMEOUT,
     secrets=[admin],
     volumes={"/keys": keys_vol},
 )
