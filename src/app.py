@@ -9,6 +9,15 @@ from web import admin_token_from_env, create_web_app
 
 app = modal.App("gliner")
 
+# Extractor @modal.enter loads a 74-287M checkpoint. Cold start is minutes.
+# The web function blocks on extract.remote(), so its timeout must outlive
+# extractor startup plus one inference. Modal's HTTP layer 303s every 150s;
+# that is not a substitute for a long enough function timeout (default 300s).
+EXTRACTOR_TIMEOUT = 300
+EXTRACTOR_STARTUP_TIMEOUT = 600
+WEB_TIMEOUT = EXTRACTOR_STARTUP_TIMEOUT + EXTRACTOR_TIMEOUT
+WEB_STARTUP_TIMEOUT = 60
+
 keys_vol = modal.Volume.from_name("gliner-keys", create_if_missing=True)
 admin = modal.Secret.from_name("gliner-admin")
 
@@ -44,9 +53,8 @@ infer_image = (
     memory=8192,
     min_containers=0,
     scaledown_window=60,
-    timeout=300,
-    startup_timeout=600,
-    single_use_containers=True,
+    timeout=EXTRACTOR_TIMEOUT,
+    startup_timeout=EXTRACTOR_STARTUP_TIMEOUT,
 )
 class Extractor:
     name: str = modal.parameter()
@@ -88,6 +96,8 @@ def _dispatch(body: ExtractEntitiesRequest) -> ExtractResult:
     min_containers=0,
     max_containers=1,
     scaledown_window=60,
+    timeout=WEB_TIMEOUT,
+    startup_timeout=WEB_STARTUP_TIMEOUT,
     secrets=[admin],
     volumes={"/keys": keys_vol},
 )
