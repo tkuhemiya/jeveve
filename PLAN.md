@@ -51,7 +51,7 @@ Pin package versions in `pip_install`. Rebuilds should not float.
 
 Web function (`@modal.asgi_app`). FastAPI. Auth, key CRUD. No PyTorch. ~1 GiB CPU. Public URL.
 
-Extractor class. `name: ModelName = modal.parameter()`. `@modal.enter` loads that Hub id. `@modal.method` takes the same Pydantic body the HTTP route already validated. 2 CPU, 8 GiB, `max_inputs=1`.
+Extractor class. `name: str = modal.parameter()` (plain `str`; postponed annotations break Modal’s parameter encoder). `@modal.enter` loads that Hub id. `@modal.method` takes the same Pydantic body the HTTP route already validated. 2 CPU, 8 GiB, `single_use_containers=True`.
 
 ```python
 keys_vol = modal.Volume.from_name("gliner-keys", create_if_missing=True)

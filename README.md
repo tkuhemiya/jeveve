@@ -2,7 +2,75 @@
 
 GLiNER2.5 entity extraction on Modal. One public URL, bearer keys, scale to zero.
 
-Models: `small` (default, English), `base` (English), `multi` (non-English).
+## What's live
+
+Production app `gliner`, web function:
+
+https://tkuhemiya--gliner-web.modal.run
+
+`GET /health` is public. It only means the web process is up and `keys.json` is readable, not that an extractor is warm.
+
+| `model` | Checkpoint | Use |
+| --- | --- | --- |
+| `small` (default) | `fastino/gliner2.5-small-v1` | English, cheapest/fastest |
+| `base` | `fastino/gliner2.5-base-v1` | English, better quality |
+| `multi` | `fastino/gliner2.5-multi-v1` | Non-English |
+
+All three are baked into the image. Request one per call with `"model"`. Idle pools scale to zero after 60s. Traffic to `small` does not keep `base` or `multi` warm.
+
+## How to call it
+
+You need two secrets. `ADMIN_TOKEN` lives in Modal secret `gliner-admin` (not git, not GitHub). Use it only to mint and revoke API keys. `API_KEY` is a `jv_...` value returned once from `POST /v1/keys`. That is what extract uses.
+
+```bash
+export URL="https://tkuhemiya--gliner-web.modal.run"
+export ADMIN_TOKEN="..."   # from Modal secret gliner-admin
+```
+
+```bash
+curl -sS "$URL/health"
+```
+
+Mint a key:
+
+```bash
+curl -sS -X POST "$URL/v1/keys" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "prod-bot"}'
+```
+
+```json
+{"id": "k_...", "name": "prod-bot", "created_at": "...", "key": "jv_..."}
+```
+
+Put `key` in `API_KEY`. One key works for every model.
+
+```bash
+export API_KEY="jv_..."
+
+curl -sS -X POST "$URL/v1/extract_entities" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "small",
+    "text": "Apple CEO Tim Cook announced iPhone 15 in Cupertino yesterday.",
+    "labels": ["company", "person", "product", "location"],
+    "include_confidence": true,
+    "include_spans": true
+  }'
+```
+
+Use `"model": "multi"` for non-English text. Labels can be a list or a map of name → description (`{"person": "A named human"}`). Unknown JSON fields are 422. Missing or wrong bearer is 401.
+
+First extract after idle boots the web function, then that model's pool. Key create and delete run on a single web container so concurrent mints cannot overwrite `keys.json`.
+
+List or delete keys with the same admin bearer:
+
+```bash
+curl -sS "$URL/v1/keys" -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -sS -X DELETE "$URL/v1/keys/$KEY_ID" -H "Authorization: Bearer $ADMIN_TOKEN"
+```
 
 ## Prerequisites
 
@@ -43,63 +111,11 @@ uv run modal deploy src/app.py
 
 Persistent URL. First image build downloads all three checkpoints; later deploys reuse the image.
 
-Set the URL:
-
-```bash
-export URL="https://<your-app>.modal.run"
-export ADMIN_TOKEN="..."   # the value you created above
-```
-
-`GET $URL/health` is unauthenticated. It means the web process is up and `keys.json` is readable, not that an extractor is warm. Corrupt or unreadable key store is 503.
-
-## 4. Mint an API key
-
-```bash
-curl -sS -X POST "$URL/v1/keys" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "prod-bot"}'
-```
-
-```json
-{"id": "k_...", "name": "prod-bot", "created_at": "...", "key": "jv_..."}
-```
-
-`key` is returned once. Put it in `API_KEY`. One key can call every model. Create and delete run on a single web container so concurrent mints cannot overwrite `keys.json`. Extract still fans out to per-model pools.
-
-```bash
-curl -sS "$URL/v1/keys" -H "Authorization: Bearer $ADMIN_TOKEN"
-curl -sS -X DELETE "$URL/v1/keys/$KEY_ID" -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-## 5. Extract
-
-```bash
-curl -sS -X POST "$URL/v1/extract_entities" \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "small",
-    "text": "Apple CEO Tim Cook announced iPhone 15 in Cupertino yesterday.",
-    "labels": ["company", "person", "product", "location"],
-    "include_confidence": true,
-    "include_spans": true
-  }'
-```
-
-Unknown JSON fields return 422. Missing or wrong bearer returns 401.
-
-Use `"model": "multi"` for non-English text. Labels can also be a map of name → description:
-
-```json
-{"person": "A named human", "company": "An organization"}
-```
-
-Cold extract boots the web function if needed, then the extractor pool for that `model`. `small` traffic does not keep `multi` warm. Idle containers scale to zero after 60s.
+Pushes to `main` also deploy via `.github/workflows/ci.yml`. Add repository secrets `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` (Modal → Settings → Tokens). The FastAPI `ADMIN_TOKEN` stays in the Modal secret `gliner-admin`. Do not put it in GitHub. Do not use the Modal token id (`ak-...`) as that value.
 
 ## Key store recovery
 
-`keys.json` lives on Modal volume `gliner-keys` (mounted at `/keys`). Writes are atomic (temp file + replace). If the file is corrupt, `/health`, key admin routes, and extract auth return 503. There is no API rewrite path — restore the volume file.
+`keys.json` lives on Modal volume `gliner-keys` (mounted at `/keys`). Writes are atomic (temp file + replace). If the file is corrupt, `/health`, key admin routes, and extract auth return 503. There is no API rewrite path. Restore the volume file.
 
 Copy the current file off the volume before you replace it:
 

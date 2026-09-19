@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 
 import modal
@@ -24,17 +22,19 @@ web_image = (
         "fastapi[standard]==0.141.1",
         "pydantic==2.13.5",
     )
-    .add_local_dir(str(SRC_DIR), remote_path="/pkg")
     .env({"PYTHONPATH": "/pkg"})
+    .add_local_dir(str(SRC_DIR), remote_path="/pkg")
 )
 
 infer_image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install("gliner2[local]==2.0.0", "pydantic==2.13.5")
-    .env({"HF_HOME": "/root/.cache/huggingface"})
+    # Checkpoints ship tokenizer_config extra_special_tokens as a list (transformers 5).
+    # gliner2[local] 2.0.0 still caps transformers<5, so lift it after the extra install.
+    .run_commands("python -m pip install --upgrade transformers==5.16.1")
+    .env({"HF_HOME": "/root/.cache/huggingface", "PYTHONPATH": "/pkg"})
     .run_commands(f'python -c "from gliner2 import AutoExtractor as A; {_PRELOAD}"')
     .add_local_dir(str(SRC_DIR), remote_path="/pkg")
-    .env({"HF_HOME": "/root/.cache/huggingface", "PYTHONPATH": "/pkg"})
 )
 
 
@@ -46,7 +46,7 @@ infer_image = (
     scaledown_window=60,
     timeout=300,
     startup_timeout=600,
-    max_inputs=1,
+    single_use_containers=True,
 )
 class Extractor:
     name: str = modal.parameter()
